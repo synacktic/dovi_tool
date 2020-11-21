@@ -20,6 +20,7 @@ pub struct DoviWriter {
     bl_writer: Option<BufWriter<File>>,
     el_writer: Option<BufWriter<File>>,
     rpu_writer: Option<BufWriter<File>>,
+    bl_el_rpu_writer: Option<BufWriter<File>>,
 }
 
 pub struct NalUnit {
@@ -39,6 +40,7 @@ impl DoviWriter {
         bl_out: Option<&PathBuf>,
         el_out: Option<&PathBuf>,
         rpu_out: Option<&PathBuf>,
+        bl_el_rpu_out: Option<&PathBuf>,
     ) -> DoviWriter {
         let chunk_size = 1024 * 1024 * 4;
         let bl_writer = if let Some(bl_out) = bl_out {
@@ -68,10 +70,20 @@ impl DoviWriter {
             None
         };
 
+        let bl_el_rpu_writer = if let Some(rpu_out) = bl_el_rpu_out {
+            Some(BufWriter::with_capacity(
+                chunk_size * 2,
+                File::create(rpu_out).expect("Can't create file"),
+            ))
+        } else {
+            None
+        };
+
         DoviWriter {
             bl_writer,
             el_writer,
             rpu_writer,
+            bl_el_rpu_writer,
         }
     }
 }

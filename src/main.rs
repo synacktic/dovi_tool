@@ -6,7 +6,7 @@ mod bits;
 use bits::{bitvec_reader, bitvec_writer};
 
 mod dovi;
-use dovi::{demuxer::Demuxer, rpu_extractor::RpuExtractor, Format};
+use dovi::{demuxer::Demuxer, rpu_extractor::RpuExtractor, Format, muxer::Muxer};
 
 #[derive(StructOpt, Debug)]
 struct Opt {
@@ -26,6 +26,29 @@ struct Opt {
 #[derive(StructOpt, Debug)]
 #[structopt(name = "dovi_tool", about = "Stuff about Dolby Vision")]
 enum Command {
+    Mux {
+        #[structopt(
+            name = "bl_in",
+            short = "bl",
+            long,
+            help = "Sets the input BL file to use",
+            parse(from_os_str)
+        )]
+        bl_in: PathBuf,
+
+        #[structopt(
+            name = "el_in",
+            short = "el",
+            long,
+            help = "Sets the input EL file to use",
+            parse(from_os_str)
+        )]
+        el_in: PathBuf,
+
+        #[structopt(long, help = "Output file location", parse(from_os_str))]
+        output: Option<PathBuf>,
+    },
+
     Demux {
         #[structopt(
             name = "input",
@@ -78,6 +101,13 @@ fn main() -> std::io::Result<()> {
     let opt = Opt::from_args();
 
     match opt.cmd {
+        Command::Mux {
+            bl_in,
+            el_in,
+            output,
+        } => {
+            mux(bl_in, el_in, output, opt.mode);
+        }
         Command::Demux {
             input,
             stdin,
@@ -119,6 +149,26 @@ fn input_format(input: &PathBuf) -> Result<Format, &str> {
         Err("Input file doesn't exist.")
     } else {
         Err("Invalid input file type.")
+    }
+}
+
+fn mux(
+    bl_in: PathBuf,
+    el_in: PathBuf,
+    output: Option<PathBuf>,
+    mode: Option<u8>,
+) {
+    match input_format(&bl_in) {
+        Ok(format) => {
+            let output = match output {
+                Some(path) => path,
+                None => PathBuf::from("BL_EL_RPU.hevc"),
+            };
+
+            let muxer = Muxer::new(format, bl_in, el_in, output);
+            muxer.process_input(mode);
+        }
+        Err(msg) => println!("{}", msg),
     }
 }
 

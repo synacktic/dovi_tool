@@ -31,7 +31,7 @@ impl RpuExtractor {
 
     pub fn extract_rpu_from_el(&self, pb: Option<&ProgressBar>, mode: Option<u8>) {
         let mut dovi_reader = DoviReader::new(mode);
-        let mut dovi_writer = DoviWriter::new(None, None, Some(&self.rpu_out));
+        let mut dovi_writer = DoviWriter::new(None, None, Some(&self.rpu_out), None);
 
         match dovi_reader.read_write_from_io(&self.format, &self.input, pb, &mut dovi_writer) {
             Ok(_) => (),

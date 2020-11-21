@@ -1,3 +1,4 @@
+pub mod muxer;
 pub mod demuxer;
 mod io;
 pub mod rpu_extractor;
