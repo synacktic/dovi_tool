@@ -114,32 +114,28 @@ impl DoviReader {
                         if consumed == 0 {
                             if let Some(ref chunk_type) = current_chunk_type {
                                 let previous_nal_data = nal.1;
-                                println!("Previous size: {}", previous_nal_data.len());
+
+                                // Consumed the previous data
+                                consumed += previous_nal_data.len();
 
                                 self.write_nal_data(dovi_writer, chunk_type, previous_nal_data)?;
                             }
                         }
     
-                        let mut nal_data = nal.0;
+                        let nal_data = nal.0;
                         let nal_type = nal_data[header_len] >> 1;
     
                         // Find the next nal, get the length of the previous data
                         // If no match, the size is the whole slice
                         let size = match Self::take_until_nal(&nal_data[header_len..]) {
-                            Ok(next_nal) => {
-                                if next_nal.1.len() + header_len == 38 {
-                                    println!("{} {:?}", consumed, next_nal.1);
-                                }
-
-                                next_nal.1.len() + header_len
-                            },
+                            Ok(next_nal) => next_nal.1.len() + header_len,
                             _ => {
                                 end_of_chunk = true;
                                 nal_data.len()
                             },
                         };
 
-                        nal_data = &nal_data[..size];
+                        // Consumed the whole nal
                         consumed += size;
     
                         match nal_type {
@@ -153,14 +149,12 @@ impl DoviReader {
                                 current_chunk_type = Some(ChunkType::BLChunk);
                             }
                         }
-
-                        println!("{} {} {:?}", consumed, size, current_chunk_type);
     
                         if let Some(ref chunk_type) =  current_chunk_type {
                             // The real nal type is 2 bytes after
                             let trimmed_data = match chunk_type {
-                                ChunkType::ELChunk => &nal_data[2..],
-                                _ => &nal_data
+                                ChunkType::ELChunk => &nal_data[2..size],
+                                _ => &nal_data[..size]
                             };
     
                             self.write_nal_data(dovi_writer, chunk_type, trimmed_data)?;
