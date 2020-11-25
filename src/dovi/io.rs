@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use ansi_term::Colour::Red;
 use indicatif::ProgressBar;
 use read_byte_slice::{ByteSliceIter, FallibleStreamingIterator};
-use nom::{error::ErrorKind, IResult, bytes::complete::take_until};
+use nom::{IResult, bytes::complete::take_until};
 
 use super::rpu::parse_dovi_rpu;
 use super::Format;
@@ -100,16 +100,21 @@ impl DoviReader {
 
         //Byte chunk iterator
         let mut iter = ByteSliceIter::new(reader, 100_000);
+
         let mut current_chunk_type: Option<ChunkType> = None;
         let mut consumed = 0;
         let mut end_of_chunk = false;
 
         let header_len = NAL_START_CODE.len();
+        let mut nal_type_index = header_len;
 
+        // Loop over chunks
         while let Some(read_data) = iter.next()? {
             'chunk: loop {
                 match Self::take_until_nal(&read_data[consumed..]) {
                     Ok(nal) => {
+                        let nal_data = nal.0;
+
                         // New bytes input chunk, write the rest into previous writer
                         if consumed == 0 {
                             if let Some(ref chunk_type) = current_chunk_type {
@@ -120,10 +125,36 @@ impl DoviReader {
 
                                 self.write_nal_data(dovi_writer, chunk_type, previous_nal_data)?;
                             }
+                        } else if nal_data.len() == header_len {
+                            // Only have the header in this chunk
+                            nal_type_index = 0;
+                            consumed = 0;
+                            end_of_chunk = false;
+                            break 'chunk;
                         }
     
-                        let nal_data = nal.0;
-                        let nal_type = nal_data[header_len] >> 1;
+                        let nal_type = nal_data[nal_type_index] >> 1;
+
+                        match nal_type {
+                            62 => { // RPU
+                                current_chunk_type = Some(ChunkType::RPUChunk);
+                            },
+                            63 => { // EL
+                                current_chunk_type = Some(ChunkType::ELChunk);  
+                            },
+                            _ => { // BL
+                                current_chunk_type = Some(ChunkType::BLChunk);
+                            }
+                        }
+
+                        // Write the header that was in the previous chunk
+                        if nal_type_index == 0 {
+                            if let Some(ref chunk_type) = current_chunk_type {
+                                self.write_nal_header(dovi_writer, chunk_type)?;
+                            }
+
+                            nal_type_index = header_len;
+                        }
     
                         // Find the next nal, get the length of the previous data
                         // If no match, the size is the whole slice
@@ -137,18 +168,7 @@ impl DoviReader {
 
                         // Consumed the whole nal
                         consumed += size;
-    
-                        match nal_type {
-                            62 => { // RPU
-                                current_chunk_type = Some(ChunkType::RPUChunk);
-                            },
-                            63 => { // EL
-                                current_chunk_type = Some(ChunkType::ELChunk);  
-                            },
-                            _ => { // BL
-                                current_chunk_type = Some(ChunkType::BLChunk);
-                            }
-                        }
+
     
                         if let Some(ref chunk_type) =  current_chunk_type {
                             // The real nal type is 2 bytes after
@@ -178,9 +198,7 @@ impl DoviReader {
                         consumed = 0;
                         break 'chunk;
                     }
-                    Err(e) => {
-                        println!("{:?}", e.to_string());
-                    }
+                    Err(e) => panic!("{:?}", e),
                 }
             }
         }
@@ -237,6 +255,30 @@ impl DoviReader {
                     rpu_writer.write(&data[2..])?;
                 } else if let Some(ref mut el_writer) = dovi_writer.el_writer {
                     el_writer.write(&data)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_nal_header(&mut self, dovi_writer: &mut DoviWriter, chunk_type: &ChunkType) -> Result<(), std::io::Error> {
+        match chunk_type {
+            ChunkType::BLChunk => {
+                if let Some(ref mut bl_writer) = dovi_writer.bl_writer {
+                    bl_writer.write(NAL_START_CODE)?;
+                }
+            }
+            ChunkType::ELChunk => {
+                if let Some(ref mut el_writer) = dovi_writer.el_writer {
+                    el_writer.write(NAL_START_CODE)?;
+                }
+            }
+            ChunkType::RPUChunk => {
+                if let Some(ref mut rpu_writer) = dovi_writer.rpu_writer {
+                    rpu_writer.write(NAL_START_CODE)?;
+                } else if let Some(ref mut el_writer) = dovi_writer.el_writer {
+                    el_writer.write(NAL_START_CODE)?;
                 }
             }
         }
