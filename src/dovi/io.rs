@@ -10,10 +10,9 @@ use nom::{error::ErrorKind, IResult, bytes::complete::take_until};
 use super::rpu::parse_dovi_rpu;
 use super::Format;
 
-const NAL_START_CODE: &[u8] = &[0, 0, 1];
+const NAL_START_CODE: &[u8] = &[0, 0, 0, 1];
 
 pub struct DoviReader {
-    out_nal_header: Vec<u8>,
     mode: Option<u8>,
 }
 
@@ -23,6 +22,7 @@ pub struct DoviWriter {
     rpu_writer: Option<BufWriter<File>>,
 }
 
+#[derive(Debug)]
 pub enum ChunkType {
     BLChunk,
     ELChunk,
@@ -74,7 +74,6 @@ impl DoviWriter {
 impl DoviReader {
     pub fn new(mode: Option<u8>) -> DoviReader {
         DoviReader {
-            out_nal_header: vec![0, 0, 0, 1],
             mode,
         }
     }
@@ -103,57 +102,85 @@ impl DoviReader {
         let mut iter = ByteSliceIter::new(reader, 100_000);
         let mut current_chunk_type: Option<ChunkType> = None;
         let mut consumed = 0;
+        let mut end_of_chunk = false;
 
-        while let Ok(Some(read_data)) = iter.next() {
+        let header_len = NAL_START_CODE.len();
+
+        while let Some(read_data) = iter.next()? {
             'chunk: loop {
                 match Self::take_until_nal(&read_data[consumed..]) {
                     Ok(nal) => {
-                        if let Some(ref chunk_type) = current_chunk_type {
-                            let previous_nal_data = nal.1;
-    
-                            self.write_nal_data(dovi_writer, chunk_type, previous_nal_data)?;
+                        // New bytes input chunk, write the rest into previous writer
+                        if consumed == 0 {
+                            if let Some(ref chunk_type) = current_chunk_type {
+                                let previous_nal_data = nal.1;
+                                println!("Previous size: {}", previous_nal_data.len());
+
+                                self.write_nal_data(dovi_writer, chunk_type, previous_nal_data)?;
+                            }
                         }
     
-                        let nal_data = nal.0;
-                        let nal_type = nal_data[3] >> 1;
+                        let mut nal_data = nal.0;
+                        let nal_type = nal_data[header_len] >> 1;
     
-                        consumed += nal_data.len();
+                        // Find the next nal, get the length of the previous data
+                        // If no match, the size is the whole slice
+                        let size = match Self::take_until_nal(&nal_data[header_len..]) {
+                            Ok(next_nal) => {
+                                if next_nal.1.len() + header_len == 38 {
+                                    println!("{} {:?}", consumed, next_nal.1);
+                                }
+
+                                next_nal.1.len() + header_len
+                            },
+                            _ => {
+                                end_of_chunk = true;
+                                nal_data.len()
+                            },
+                        };
+
+                        nal_data = &nal_data[..size];
+                        consumed += size;
     
                         match nal_type {
                             62 => { // RPU
                                 current_chunk_type = Some(ChunkType::RPUChunk);
                             },
                             63 => { // EL
-                                //start = 5;
                                 current_chunk_type = Some(ChunkType::ELChunk);  
                             },
                             _ => { // BL
                                 current_chunk_type = Some(ChunkType::BLChunk);
                             }
                         }
+
+                        println!("{} {} {:?}", consumed, size, current_chunk_type);
     
                         if let Some(ref chunk_type) =  current_chunk_type {
-                            if let Some(ref mut bl_writer) = dovi_writer.bl_writer {
-                                bl_writer.write(&self.out_nal_header)?;
-                            } else if let Some(ref mut el_writer) = dovi_writer.el_writer {
-                                el_writer.write(&self.out_nal_header)?;
-                            } else if let Some(ref mut rpu_writer) = dovi_writer.rpu_writer {
-                                rpu_writer.write(&self.out_nal_header)?;
-                            }
-    
+                            // The real nal type is 2 bytes after
                             let trimmed_data = match chunk_type {
-                                ChunkType::ELChunk => &nal_data[5..],
-                                _ => &nal_data[3..]
+                                ChunkType::ELChunk => &nal_data[2..],
+                                _ => &nal_data
                             };
     
                             self.write_nal_data(dovi_writer, chunk_type, trimmed_data)?;
                         }
+
+                        if end_of_chunk {
+                            consumed = 0;
+                            end_of_chunk = false;
+                            break 'chunk;
+                        }
                     },
-                    Err(nom::Err::Error(e)) => {
-                        if let Some(ref chunk_type) = current_chunk_type {
-                            self.write_nal_data(dovi_writer, chunk_type, e.input)?;
+                    Err(nom::Err::Error(_)) => {
+                        // No match for this chunk at all, write it all as previous type
+                        if consumed == 0 {
+                            if let Some(ref chunk_type) = current_chunk_type {
+                                self.write_nal_data(dovi_writer, chunk_type, &read_data)?;
+                            }
                         }
 
+                        end_of_chunk = false;
                         consumed = 0;
                         break 'chunk;
                     }
