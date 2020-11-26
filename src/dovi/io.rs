@@ -122,8 +122,28 @@ impl DoviReader {
 
                         // New bytes input chunk, write the rest into previous writer
                         if consumed == 0 {
-                            if let Some(ref chunk_type) = current_chunk_type {
-                                let previous_nal_data = nal.1;
+                            let previous_nal_data = nal.1;
+
+                            // We need the nal type now if it's unknown
+                            if nal_type_index == 0 {
+                                let nal_type = previous_nal_data[nal_type_index] >> 1;
+
+                                match nal_type {
+                                    62 => current_chunk_type = Some(ChunkType::RPUChunk),
+                                    63 => {
+                                        current_chunk_type = Some(ChunkType::ELChunk);
+                                        self.skip_next = 2;
+                                    },
+                                    _ => current_chunk_type = Some(ChunkType::BLChunk),
+                                };
+
+                                nal_type_index = HEADER_LEN;
+                                contains_header = false;
+                            } else {
+                                contains_header = true;
+                            }
+
+                            if let Some(ref mut chunk_type) = current_chunk_type {
 
                                 // We need a complete RPU to parse
                                 // Don't write the header as it was already done
@@ -145,9 +165,8 @@ impl DoviReader {
                                 consumed += previous_nal_data.len();
                             }
                         } else if nal_data.len() == HEADER_LEN {
-                            // EL needs to remove the fake type
-                            self.skip_next = 2;
-
+                            // Only the header is in the current chunk, mark it so
+                            // The next chunk requires the new nal type
                             nal_type_index = 0;
                             consumed = 0;
                             no_next_nal = false;
@@ -164,19 +183,6 @@ impl DoviReader {
 
                         let header_len = nal_type_index;
 
-                        // Write header into correct output, reset type index
-                        if nal_type_index == 0 {
-                            // Only have the header in this chunk
-                            if let Some(ref chunk_type) = current_chunk_type {
-                                self.write_nal_header(dovi_writer, chunk_type)?;
-                            }
-
-                            nal_type_index = HEADER_LEN;
-                            contains_header = false;
-                        } else {
-                            contains_header = true;
-                        }
-    
                         // Find the next nal, get the length of the previous data
                         // If no match, the size is the whole slice
                         let size = match Self::take_until_nal(&nal_data[header_len..]) {
