@@ -15,6 +15,7 @@ const HEADER_LEN: usize = 4;
 
 pub struct DoviReader {
     mode: Option<u8>,
+    skip_next: usize,
 }
 
 pub struct DoviWriter {
@@ -76,6 +77,7 @@ impl DoviReader {
     pub fn new(mode: Option<u8>) -> DoviReader {
         DoviReader {
             mode,
+            skip_next: 0,
         }
     }
 
@@ -131,6 +133,11 @@ impl DoviReader {
 
                                         current_rpu.clear();
                                     },
+                                    ChunkType::ELChunk => {
+                                        self.write_nal_data(dovi_writer, chunk_type, &previous_nal_data[self.skip_next..], false)?;
+
+                                        self.skip_next = 0;
+                                    }
                                     _ => self.write_nal_data(dovi_writer, chunk_type, previous_nal_data, false)?,
                                 }
 
@@ -138,6 +145,9 @@ impl DoviReader {
                                 consumed += previous_nal_data.len();
                             }
                         } else if nal_data.len() == HEADER_LEN {
+                            // EL needs to remove the fake type
+                            self.skip_next = 2;
+
                             nal_type_index = 0;
                             consumed = 0;
                             no_next_nal = false;
@@ -245,11 +255,21 @@ impl DoviReader {
             }
             ChunkType::ELChunk => {
                 if let Some(ref mut el_writer) = dovi_writer.el_writer {
-                    // Partial chunks should be complete, otherwise trim fake nal_type
-                    if write_header {
-                        el_writer.write(&data[2..])?;
+                    let skip_write = if data.len() <= 2 {
+                        true
                     } else {
-                        el_writer.write(&data)?;
+                        false
+                    };
+
+                    // Partial chunks should be complete, otherwise trim fake nal_type
+                    if !skip_write {
+                        if write_header {
+                            el_writer.write(&data[2..])?;
+                        } else {
+                            el_writer.write(&data)?;
+                        }
+                    } else {
+                        self.skip_next = 2 - data.len();
                     }
                 }
             }
