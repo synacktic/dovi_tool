@@ -136,11 +136,6 @@ impl DoviReader {
                                     },
                                     _ => current_chunk_type = Some(ChunkType::BLChunk),
                                 };
-
-                                nal_type_index = HEADER_LEN;
-                                contains_header = false;
-                            } else {
-                                contains_header = true;
                             }
 
                             if let Some(ref mut chunk_type) = current_chunk_type {
@@ -182,6 +177,13 @@ impl DoviReader {
                         };
 
                         let header_len = nal_type_index;
+
+                        if nal_type_index == 0 {
+                            nal_type_index = HEADER_LEN;
+                            contains_header = false;
+                        } else {
+                            contains_header = true;
+                        }
 
                         // Find the next nal, get the length of the previous data
                         // If no match, the size is the whole slice
