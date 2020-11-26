@@ -109,6 +109,7 @@ impl DoviReader {
         let mut no_next_nal = false;
 
         let mut nal_type_index = HEADER_LEN;
+        let mut contains_header = true;
 
         let mut current_rpu: Vec<u8> = Vec::with_capacity(1024);
 
@@ -129,13 +130,12 @@ impl DoviReader {
                                 match chunk_type {
                                     ChunkType::RPUChunk => {
                                         current_rpu.extend_from_slice(previous_nal_data);
-                                        self.write_nal_data(dovi_writer, chunk_type, &current_rpu, true)?;
+                                        self.write_nal_data(dovi_writer, chunk_type, &current_rpu, contains_header)?;
 
                                         current_rpu.clear();
                                     },
                                     ChunkType::ELChunk => {
                                         self.write_nal_data(dovi_writer, chunk_type, &previous_nal_data[self.skip_next..], false)?;
-
                                         self.skip_next = 0;
                                     }
                                     _ => self.write_nal_data(dovi_writer, chunk_type, previous_nal_data, false)?,
@@ -162,7 +162,9 @@ impl DoviReader {
                             _ => current_chunk_type = Some(ChunkType::BLChunk),
                         };
 
-                        // Writer header into correct output, reset type index
+                        let header_len = nal_type_index;
+
+                        // Write header into correct output, reset type index
                         if nal_type_index == 0 {
                             // Only have the header in this chunk
                             if let Some(ref chunk_type) = current_chunk_type {
@@ -170,12 +172,15 @@ impl DoviReader {
                             }
 
                             nal_type_index = HEADER_LEN;
+                            contains_header = false;
+                        } else {
+                            contains_header = true;
                         }
     
                         // Find the next nal, get the length of the previous data
                         // If no match, the size is the whole slice
-                        let size = match Self::take_until_nal(&nal_data[HEADER_LEN..]) {
-                            Ok(next_nal) => next_nal.1.len() + HEADER_LEN,
+                        let size = match Self::take_until_nal(&nal_data[header_len..]) {
+                            Ok(next_nal) => next_nal.1.len() + header_len,
                             _ => {
                                 no_next_nal = true;
                                 nal_data.len()
@@ -186,8 +191,8 @@ impl DoviReader {
                         consumed += size;
 
                         // At the end of chunk, we don't write if it's a RPU and not complete
-                        if nal_type == 62 && nal_data[size - 1] != 0x80 {
-                            current_rpu.extend_from_slice(&nal_data[..size]);
+                        if nal_type == 62 && nal_data[size - 1] != 0x80 && no_next_nal {
+                            current_rpu.extend_from_slice(&nal_data);
 
                             consumed = 0;
                             no_next_nal = false;
@@ -196,7 +201,7 @@ impl DoviReader {
 
                         // Write full NAL
                         if let Some(ref chunk_type) =  current_chunk_type {
-                            self.write_nal_data(dovi_writer, chunk_type, &nal_data[..size], true)?;
+                            self.write_nal_data(dovi_writer, chunk_type, &nal_data[..size], contains_header)?;
                         }
 
                         if no_next_nal {
@@ -238,8 +243,8 @@ impl DoviReader {
         Ok(())
     }
 
-    fn write_nal_data(&mut self, dovi_writer: &mut DoviWriter, chunk_type: &ChunkType, data: &[u8], write_header: bool) -> Result<(), std::io::Error> {
-        let data = if write_header {
+    fn write_nal_data(&mut self, dovi_writer: &mut DoviWriter, chunk_type: &ChunkType, data: &[u8], contains_header: bool) -> Result<(), std::io::Error> {
+        let data = if contains_header {
             self.write_nal_header(dovi_writer, chunk_type)?;
 
             &data[HEADER_LEN..]
@@ -255,7 +260,7 @@ impl DoviReader {
             }
             ChunkType::ELChunk => {
                 if let Some(ref mut el_writer) = dovi_writer.el_writer {
-                    let skip_write = if data.len() <= 2 {
+                    let skip_write = if contains_header && data.len() <= 2 {
                         true
                     } else {
                         false
@@ -263,7 +268,7 @@ impl DoviReader {
 
                     // Partial chunks should be complete, otherwise trim fake nal_type
                     if !skip_write {
-                        if write_header {
+                        if contains_header {
                             el_writer.write(&data[2..])?;
                         } else {
                             el_writer.write(&data)?;
