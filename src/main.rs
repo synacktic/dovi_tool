@@ -1,12 +1,17 @@
 use regex::Regex;
-use std::path::PathBuf;
+use std::path::Path;
 use structopt::StructOpt;
 
-mod bits;
-use bits::{bitvec_reader, bitvec_writer};
+use bitvec_helpers::{bitvec_reader, bitvec_writer};
+
+mod commands;
+use commands::Command;
 
 mod dovi;
-use dovi::{demuxer::Demuxer, rpu_extractor::RpuExtractor, Format};
+use dovi::{
+    converter::Converter, demuxer::Demuxer, editor::Editor, rpu_extractor::RpuExtractor,
+    rpu_info::RpuInfo, rpu_injector::RpuInjector, Format, RpuOptions,
+};
 
 #[derive(StructOpt, Debug)]
 struct Opt {
@@ -19,63 +24,25 @@ struct Opt {
     )]
     mode: Option<u8>,
 
+    #[structopt(
+        long,
+        short = "c",
+        help = "Set active area offsets to 0 (meaning no letterbox bars)"
+    )]
+    crop: bool,
+
     #[structopt(subcommand)]
     cmd: Command,
 }
 
-#[derive(StructOpt, Debug)]
-#[structopt(name = "dovi_tool", about = "Stuff about Dolby Vision")]
-enum Command {
-    Demux {
-        #[structopt(
-            name = "input",
-            short = "i",
-            long,
-            help = "Sets the input file to use",
-            conflicts_with = "stdin",
-            parse(from_os_str)
-        )]
-        input: Option<PathBuf>,
-
-        #[structopt(
-            help = "Uses stdin as input data",
-            conflicts_with = "input",
-            parse(from_os_str)
-        )]
-        stdin: Option<PathBuf>,
-
-        #[structopt(long, help = "BL output file location", parse(from_os_str))]
-        bl_out: Option<PathBuf>,
-
-        #[structopt(long, help = "EL output file location", parse(from_os_str))]
-        el_out: Option<PathBuf>,
-    },
-
-    ExtractRpu {
-        #[structopt(
-            name = "input",
-            short = "i",
-            long,
-            help = "Sets the input file to use",
-            conflicts_with = "stdin",
-            parse(from_os_str)
-        )]
-        input: Option<PathBuf>,
-
-        #[structopt(
-            help = "Uses stdin as input data",
-            conflicts_with = "input",
-            parse(from_os_str)
-        )]
-        stdin: Option<PathBuf>,
-
-        #[structopt(long, help = "RPU output file location", parse(from_os_str))]
-        rpu_out: Option<PathBuf>,
-    },
-}
-
-fn main() -> std::io::Result<()> {
+fn main() {
     let opt = Opt::from_args();
+
+    let mut rpu_options = RpuOptions {
+        mode: opt.mode,
+        crop: opt.crop,
+        discard_el: false,
+    };
 
     match opt.cmd {
         Command::Demux {
@@ -83,22 +50,36 @@ fn main() -> std::io::Result<()> {
             stdin,
             bl_out,
             el_out,
+        } => Demuxer::demux(input, stdin, bl_out, el_out, rpu_options),
+        Command::Editor {
+            input,
+            json_file,
+            rpu_out,
+        } => Editor::edit(input, json_file, rpu_out),
+        Command::Convert {
+            input,
+            stdin,
+            output,
+            discard,
         } => {
-            demux(input, stdin, bl_out, el_out, opt.mode);
+            rpu_options.discard_el = discard;
+            Converter::convert(input, stdin, output, rpu_options)
         }
         Command::ExtractRpu {
             input,
             stdin,
             rpu_out,
-        } => {
-            extract_rpu(input, stdin, rpu_out, opt.mode);
-        }
+        } => RpuExtractor::extract_rpu(input, stdin, rpu_out, rpu_options),
+        Command::InjectRpu {
+            input,
+            rpu_in,
+            output,
+        } => RpuInjector::inject_rpu(input, rpu_in, output),
+        Command::Info { input, frame } => RpuInfo::info(input, frame),
     }
-
-    Ok(())
 }
 
-fn input_format(input: &PathBuf) -> Result<Format, &str> {
+pub fn input_format(input: &Path) -> Result<Format, &str> {
     let regex = Regex::new(r"\.(hevc|.?265|mkv)").unwrap();
     let file_name = match input.file_name() {
         Some(file_name) => file_name.to_str().unwrap(),
@@ -113,73 +94,11 @@ fn input_format(input: &PathBuf) -> Result<Format, &str> {
         } else {
             Ok(Format::Raw)
         }
-    } else if file_name == "" {
+    } else if file_name.is_empty() {
         Err("Missing input.")
     } else if !input.is_file() {
         Err("Input file doesn't exist.")
     } else {
         Err("Invalid input file type.")
-    }
-}
-
-fn demux(
-    input: Option<PathBuf>,
-    stdin: Option<PathBuf>,
-    bl_out: Option<PathBuf>,
-    el_out: Option<PathBuf>,
-    mode: Option<u8>,
-) {
-    let input = match input {
-        Some(input) => input,
-        None => match stdin {
-            Some(stdin) => stdin,
-            None => PathBuf::new(),
-        },
-    };
-
-    match input_format(&input) {
-        Ok(format) => {
-            let bl_out = match bl_out {
-                Some(path) => path,
-                None => PathBuf::from("BL.hevc"),
-            };
-
-            let el_out = match el_out {
-                Some(path) => path,
-                None => PathBuf::from("EL.hevc"),
-            };
-
-            let demuxer = Demuxer::new(format, input, bl_out, el_out);
-            demuxer.process_input(mode);
-        }
-        Err(msg) => println!("{}", msg),
-    }
-}
-
-fn extract_rpu(
-    input: Option<PathBuf>,
-    stdin: Option<PathBuf>,
-    rpu_out: Option<PathBuf>,
-    mode: Option<u8>,
-) {
-    let input = match input {
-        Some(input) => input,
-        None => match stdin {
-            Some(stdin) => stdin,
-            None => PathBuf::new(),
-        },
-    };
-
-    match input_format(&input) {
-        Ok(format) => {
-            let rpu_out = match rpu_out {
-                Some(path) => path,
-                None => PathBuf::from("RPU.bin"),
-            };
-
-            let parser = RpuExtractor::new(format, input, rpu_out);
-            parser.process_input(mode);
-        }
-        Err(msg) => println!("{}", msg),
     }
 }

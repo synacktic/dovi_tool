@@ -1,6 +1,7 @@
 use super::{
-    add_start_code_emulation_prevention_3_byte, rpu_data_header, vdr_dm_data, vdr_rpu_data,
-    BitVecReader, BitVecWriter,
+    add_start_code_emulation_prevention_3_byte, rpu_data_header,
+    vdr_dm_data::{self, ExtMetadataBlockLevel5},
+    vdr_rpu_data, BitVecReader, BitVecWriter,
 };
 
 use super::prelude::*;
@@ -20,6 +21,8 @@ pub struct DoviRpu {
     pub remaining: BitVec<Msb0, u8>,
     pub rpu_data_crc32: u32,
     pub last_byte: u8,
+
+    pub modified: bool,
 }
 
 impl DoviRpu {
@@ -38,6 +41,7 @@ impl DoviRpu {
         let reader = &mut dovi_rpu.reader;
         dovi_rpu.header = RpuDataHeader::rpu_data_header(reader);
 
+        // Preliminary header validation
         dovi_rpu.dovi_profile = dovi_rpu.header.get_dovi_profile();
 
         dovi_rpu.header.validate(dovi_rpu.dovi_profile);
@@ -60,11 +64,7 @@ impl DoviRpu {
             }
 
             // EOF case
-            let final_len = if end_byte == 0 {
-                48
-            } else {
-                40
-            };
+            let final_len = if end_byte == 0 { 48 } else { 40 };
 
             // CRC32 is at the end, apparently sometimes there is more unknown data
             if reader.available() != final_len {
@@ -79,10 +79,12 @@ impl DoviRpu {
             assert_eq!(last_byte, 0x80);
         }
 
+        dovi_rpu.validate();
+
         dovi_rpu
     }
 
-    pub fn convert_to_mel(&mut self) {
+    fn convert_to_mel(&mut self) {
         if let Some(ref mut nlq_data) = self.nlq_data {
             nlq_data.convert_to_mel();
         } else {
@@ -90,7 +92,7 @@ impl DoviRpu {
         }
     }
 
-    pub fn convert_to_81(&mut self) {
+    fn convert_to_81(&mut self) {
         let header = &mut self.header;
 
         // Change to 8.1
@@ -107,17 +109,7 @@ impl DoviRpu {
     }
 
     #[inline(always)]
-    pub fn write_rpu_data(&mut self, mode: u8) -> Vec<u8> {
-        if self.dovi_profile == 7 {
-            match mode {
-                1 => self.convert_to_mel(),
-                2 => self.convert_to_81(),
-                _ => (),
-            }
-        } else if mode != 0 {
-            panic!("Can only change profile 7 RPU!");
-        }
-
+    pub fn write_rpu_data(&mut self) -> Vec<u8> {
         let mut writer = BitVecWriter::new();
 
         let header = &self.header;
@@ -137,8 +129,8 @@ impl DoviRpu {
 
         let computed_crc32 = DoviRpu::compute_crc32(&writer.as_slice()[1..]);
 
-        // Validate the parsed crc32 is the same
-        if mode == 0 {
+        if !self.modified {
+            // Validate the parsed crc32 is the same
             assert_eq!(self.rpu_data_crc32, computed_crc32);
         }
 
@@ -184,5 +176,68 @@ impl DoviRpu {
         digest.update(&data);
 
         digest.finalize()
+    }
+
+    pub fn convert_with_mode(&mut self, mode: u8) {
+        if mode != 0 {
+            self.modified = true;
+        }
+
+        if self.dovi_profile == 7 {
+            match mode {
+                1 => self.convert_to_mel(),
+                2 => self.convert_to_81(),
+                _ => (),
+            }
+        } else if mode != 0 {
+            panic!("Can only change profile 7 RPU!");
+        }
+    }
+
+    pub fn crop(&mut self) {
+        self.modified = true;
+
+        if let Some(block) = ExtMetadataBlockLevel5::get_mut(self) {
+            block.crop();
+        }
+    }
+
+    pub fn p5_to_p81(&mut self) {
+        self.modified = true;
+
+        if self.dovi_profile == 5 {
+            self.convert_to_81();
+
+            self.dovi_profile = 8;
+
+            self.header.vdr_rpu_profile = 1;
+            self.header.bl_video_full_range_flag = false;
+
+            self.header.num_pivots_minus_2 = [0, 0, 0];
+            self.header.pred_pivot_value.iter_mut().for_each(|v2| {
+                v2.truncate(2);
+                v2[0] = 0;
+                v2[1] = 1023;
+            });
+
+            if let Some(ref mut vdr_rpu_data) = self.vdr_rpu_data {
+                vdr_rpu_data.p5_to_p81();
+            }
+
+            if let Some(ref mut vdr_dm_data) = self.vdr_dm_data {
+                vdr_dm_data.p5_to_p81();
+            }
+        } else {
+            panic!("Attempt to convert profile 5: RPU is not profile 5!");
+        }
+    }
+
+    pub fn validate(&mut self) {
+        self.dovi_profile = self.header.get_dovi_profile();
+        self.header.validate(self.dovi_profile);
+
+        if let Some(ref mut vdr_dm_data) = self.vdr_dm_data {
+            vdr_dm_data.validate(self.dovi_profile);
+        }
     }
 }

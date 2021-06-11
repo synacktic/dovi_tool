@@ -1,22 +1,23 @@
-mod rpu_data;
-mod rpu_data_header;
+pub(crate) mod rpu_data;
+pub(crate) mod rpu_data_header;
 mod tests;
-mod vdr_dm_data;
-mod vdr_rpu_data;
+pub(crate) mod vdr_dm_data;
+pub(crate) mod vdr_rpu_data;
 
 use bitvec::prelude;
-use rpu_data::DoviRpu;
+pub(crate) use rpu_data::DoviRpu;
 use rpu_data_header::RpuDataHeader;
 
-use super::{
+use super::{BitVecReader, BitVecWriter};
+use hevc_parser::utils::{
     add_start_code_emulation_prevention_3_byte, clear_start_code_emulation_prevention_3_byte,
-    BitVecReader, BitVecWriter,
 };
 
 #[inline(always)]
 pub fn parse_dovi_rpu(data: &[u8]) -> Result<DoviRpu, String> {
     // Clear start code emulation prevention 3 byte
     let bytes: Vec<u8> = clear_start_code_emulation_prevention_3_byte(&data[2..]);
+
     let len = bytes.len();
 
     let mut received_crc32 = DoviRpu::compute_crc32(&bytes[1..len - 5]);

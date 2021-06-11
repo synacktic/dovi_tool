@@ -79,6 +79,10 @@ impl VdrRpuData {
             // rpu_data_mapping_param()
             data.poly_order_minus1.push(vec![0; pivot_idx_count]);
             data.linear_interp_flag.push(vec![false; pivot_idx_count]);
+
+            data.poly_coef_int.push(vec![vec![]; pivot_idx_count]);
+            data.poly_coef.push(vec![vec![]; pivot_idx_count]);
+
             data.pred_linear_interp_value_int
                 .push(vec![0; pivot_idx_count]);
             data.pred_linear_interp_value.push(vec![0; pivot_idx_count]);
@@ -144,10 +148,8 @@ impl VdrRpuData {
                             let poly_coef_count =
                                 data.poly_order_minus1[cmp][pivot_idx] as usize + 1;
 
-                            data.poly_coef_int
-                                .push(vec![vec![0; poly_coef_count + 2]; pivot_idx_count]);
-                            data.poly_coef
-                                .push(vec![vec![0; poly_coef_count + 2]; pivot_idx_count]);
+                            data.poly_coef_int[cmp][pivot_idx] = vec![0; poly_coef_count + 1];
+                            data.poly_coef[cmp][pivot_idx] = vec![0; poly_coef_count + 1];
 
                             for i in 0..=poly_coef_count {
                                 if header.coefficient_data_type == 0 {
@@ -177,7 +179,7 @@ impl VdrRpuData {
                             reader.get_n(coefficient_log2_denom_length);
 
                         for i in 1..=data.mmr_order_minus1[cmp][pivot_idx] as usize + 1 {
-                            for j in 0..7 as usize {
+                            for j in 0..7_usize {
                                 if header.coefficient_data_type == 0 {
                                     data.mmr_coef_int[cmp][pivot_idx][i][j] = reader.get_se();
                                 }
@@ -298,7 +300,7 @@ impl VdrRpuData {
                             );
 
                             for i in 1..=self.mmr_order_minus1[cmp_idx][pivot_idx] as usize + 1 {
-                                for j in 0..7 as usize {
+                                for j in 0..7_usize {
                                     if header.coefficient_data_type == 0 {
                                         writer
                                             .write_se(self.mmr_coef_int[cmp_idx][pivot_idx][i][j]);
@@ -316,6 +318,93 @@ impl VdrRpuData {
                     }
                 }
             });
+    }
+
+    pub fn p5_to_p81(&mut self) {
+        self.mapping_idc.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = 0;
+        });
+
+        self.mapping_param_pred_flag.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = false;
+        });
+
+        self.num_mapping_param_predictors.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = 0;
+        });
+
+        self.diff_pred_part_idx_mapping_minus1
+            .iter_mut()
+            .for_each(|v| {
+                v.truncate(1);
+                v[0] = 0;
+            });
+
+        self.poly_order_minus1.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = 0;
+        });
+
+        self.linear_interp_flag.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = false;
+        });
+
+        self.pred_linear_interp_value_int.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = 0;
+        });
+
+        self.pred_linear_interp_value.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = 0;
+        });
+
+        self.poly_coef_int.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v.iter_mut().for_each(|v2| {
+                v2.truncate(2);
+                v2[0] = 0;
+                v2[1] = 1;
+            });
+        });
+
+        self.poly_coef.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v.iter_mut().for_each(|v2| {
+                v2.truncate(2);
+                v2[0] = 0;
+                v2[1] = 0;
+            });
+        });
+
+        self.mmr_order_minus1.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = 0;
+        });
+
+        self.mmr_constant_int.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = 0;
+        });
+
+        self.mmr_constant.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = 0;
+        });
+
+        self.mmr_coef_int.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = vec![];
+        });
+
+        self.mmr_coef.iter_mut().for_each(|v| {
+            v.truncate(1);
+            v[0] = vec![];
+        });
     }
 }
 

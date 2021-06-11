@@ -1,15 +1,29 @@
+pub mod converter;
 pub mod demuxer;
-mod io;
+pub mod editor;
 pub mod rpu_extractor;
+pub mod rpu_info;
+pub mod rpu_injector;
 
+mod io;
 mod rpu;
 
+use hevc_parser::{
+    hevc::{Frame, NAL_AUD},
+    HevcParser,
+};
+use rpu::{parse_dovi_rpu, DoviRpu};
+
 use indicatif::{ProgressBar, ProgressStyle};
-use std::fs::File;
-use std::path::PathBuf;
+use std::io::{stdout, BufReader, Read, Write};
+use std::{fs::File, io::BufWriter, path::Path};
 
 use super::bitvec_reader::BitVecReader;
 use super::bitvec_writer::BitVecWriter;
+use super::input_format;
+
+const OUT_NAL_HEADER: &[u8] = &[0, 0, 0, 1];
+
 #[derive(Debug, PartialEq)]
 pub enum Format {
     Raw,
@@ -17,39 +31,14 @@ pub enum Format {
     Matroska,
 }
 
-pub fn clear_start_code_emulation_prevention_3_byte(data: &[u8]) -> Vec<u8> {
-    data.iter()
-        .enumerate()
-        .filter_map(|(index, value)| {
-            if index > 2
-                && index < data.len() - 2
-                && data[index - 2] == 0
-                && data[index - 1] == 0
-                && data[index] <= 3
-            {
-                None
-            } else {
-                Some(*value)
-            }
-        })
-        .collect::<Vec<u8>>()
+#[derive(Debug)]
+pub struct RpuOptions {
+    pub mode: Option<u8>,
+    pub crop: bool,
+    pub discard_el: bool,
 }
 
-pub fn add_start_code_emulation_prevention_3_byte(data: &mut Vec<u8>) {
-    let mut count = data.len();
-    let mut i = 0;
-
-    while i < count {
-        if i > 2 && i < count - 2 && data[i - 2] == 0 && data[i - 1] == 0 && data[i] <= 3 {
-            data.insert(i, 3);
-            count += 1;
-        }
-
-        i += 1;
-    }
-}
-
-pub fn initialize_progress_bar(format: &Format, input: &PathBuf) -> ProgressBar {
+pub fn initialize_progress_bar(format: &Format, input: &Path) -> ProgressBar {
     let pb: ProgressBar;
     let bytes_count;
 
@@ -79,4 +68,112 @@ impl std::fmt::Display for Format {
             Format::RawStdin => write!(f, "HEVC pipe"),
         }
     }
+}
+
+pub fn parse_rpu_file(input: &Path) -> Option<Vec<DoviRpu>> {
+    println!("Parsing RPU file...");
+    stdout().flush().ok();
+
+    let rpu_file = File::open(input).unwrap();
+    let metadata = rpu_file.metadata().unwrap();
+
+    // Should never be this large, avoid mistakes
+    if metadata.len() > 250_000_000 {
+        panic!("Input file probably too large");
+    }
+
+    let mut reader = BufReader::new(rpu_file);
+
+    // Should be small enough to fit in the memory
+    let mut data = vec![0; metadata.len() as usize];
+    reader.read_exact(&mut data).unwrap();
+
+    let mut offsets = Vec::with_capacity(200_000);
+    let mut parser = HevcParser::default();
+
+    parser.get_offsets(&data, &mut offsets);
+
+    let count = offsets.len();
+    let last = *offsets.last().unwrap();
+
+    let rpus: Vec<DoviRpu> = offsets
+        .iter()
+        .enumerate()
+        .map(|(index, offset)| {
+            let size = if offset == &last {
+                data.len() - offset - 1
+            } else {
+                let size = if index == count - 1 {
+                    last - offset
+                } else {
+                    offsets[index + 1] - offset
+                };
+
+                match &data[offset + size - 1..offset + size + 3] {
+                    [0, 0, 0, 1] => size - 2,
+                    _ => size,
+                }
+            };
+
+            let start = *offset + 1;
+            let end = start + size;
+
+            parse_dovi_rpu(&data[start..end])
+        })
+        .filter_map(Result::ok)
+        .collect();
+
+    if count > 0 && rpus.len() == count {
+        Some(rpus)
+    } else if count == 0 {
+        panic!("No RPU found");
+    } else {
+        panic!("Number of valid RPUs different from total");
+    }
+}
+
+pub fn write_rpu_file(output_path: &Path, rpus: &mut Vec<DoviRpu>) -> Result<(), std::io::Error> {
+    println!("Writing RPU file...");
+    let mut writer = BufWriter::with_capacity(
+        100_000,
+        File::create(output_path).expect("Can't create file"),
+    );
+
+    for rpu in rpus.iter_mut() {
+        let data = rpu.write_rpu_data();
+
+        writer.write_all(OUT_NAL_HEADER)?;
+
+        // Remove 0x7C01
+        writer.write_all(&data[2..])?;
+    }
+
+    writer.flush()?;
+
+    Ok(())
+}
+
+pub fn get_aud(frame: &Frame) -> Vec<u8> {
+    let pic_type: u8 = match &frame.frame_type {
+        2 => 0,
+        1 => 1,
+        0 => 2,
+        _ => 7,
+    };
+
+    let mut data = OUT_NAL_HEADER.to_vec();
+    let mut writer = BitVecWriter::new();
+
+    // forbidden_zero_bit
+    writer.write(false);
+
+    writer.write_n(&(NAL_AUD).to_be_bytes(), 6);
+    writer.write_n(&(0 as u8).to_be_bytes(), 6);
+    writer.write_n(&(0 as u8).to_be_bytes(), 3);
+
+    writer.write_n(&pic_type.to_be_bytes(), 3);
+
+    data.extend_from_slice(writer.as_slice());
+
+    data
 }

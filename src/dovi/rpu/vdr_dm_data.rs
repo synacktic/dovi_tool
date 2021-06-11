@@ -1,4 +1,4 @@
-use super::{prelude::*, BitVecReader, BitVecWriter};
+use super::{prelude::*, BitVecReader, BitVecWriter, DoviRpu};
 
 #[derive(Debug, Default)]
 pub struct VdrDmData {
@@ -38,7 +38,7 @@ pub struct VdrDmData {
     source_max_pq: u16,
     source_diagonal: u16,
     num_ext_blocks: u64,
-    ext_metadata_blocks: Vec<ExtMetadataBlock>,
+    pub(crate) ext_metadata_blocks: Vec<ExtMetadataBlock>,
 }
 
 #[derive(Debug)]
@@ -171,15 +171,16 @@ impl VdrDmData {
             }
         }
 
-        data.validate();
-
         data
     }
 
-    pub fn validate(&self) {
+    pub fn validate(&self, profile: u8) {
         assert!(self.affected_dm_metadata_id <= 15);
         assert!(self.signal_bit_depth >= 8 && self.signal_bit_depth <= 16);
-        assert_eq!(self.signal_eotf, 65535);
+
+        if profile > 4 {
+            assert_eq!(self.signal_eotf, 65535);
+        }
     }
 
     pub fn write(&self, writer: &mut BitVecWriter) {
@@ -235,6 +236,33 @@ impl VdrDmData {
                 ext_metadata_block.write(writer);
             }
         }
+    }
+
+    pub fn p5_to_p81(&mut self) {
+        self.ycc_to_rgb_coef0 = 9574;
+        self.ycc_to_rgb_coef1 = 0;
+        self.ycc_to_rgb_coef2 = 13802;
+        self.ycc_to_rgb_coef3 = 9574;
+        self.ycc_to_rgb_coef4 = -1540;
+        self.ycc_to_rgb_coef5 = -5348;
+        self.ycc_to_rgb_coef6 = 9574;
+        self.ycc_to_rgb_coef7 = 17610;
+        self.ycc_to_rgb_coef8 = 0;
+        self.ycc_to_rgb_offset0 = 16777216;
+        self.ycc_to_rgb_offset1 = 134217728;
+        self.ycc_to_rgb_offset2 = 134217728;
+
+        self.rgb_to_lms_coef0 = 7222;
+        self.rgb_to_lms_coef1 = 8771;
+        self.rgb_to_lms_coef2 = 390;
+        self.rgb_to_lms_coef3 = 2654;
+        self.rgb_to_lms_coef4 = 12430;
+        self.rgb_to_lms_coef5 = 1300;
+        self.rgb_to_lms_coef6 = 0;
+        self.rgb_to_lms_coef7 = 422;
+        self.rgb_to_lms_coef8 = 15962;
+
+        self.signal_color_space = 0;
     }
 }
 
@@ -415,5 +443,42 @@ impl ExtMetadataBlock {
                 .iter()
                 .for_each(|_| writer.write(false)),
         }
+    }
+}
+
+impl ExtMetadataBlockLevel5 {
+    pub fn _get_offsets(&self) -> Vec<u16> {
+        vec![
+            self.active_area_left_offset,
+            self.active_area_right_offset,
+            self.active_area_top_offset,
+            self.active_area_bottom_offset,
+        ]
+    }
+
+    pub fn set_offsets(&mut self, left: u16, right: u16, top: u16, bottom: u16) {
+        self.active_area_left_offset = left;
+        self.active_area_right_offset = right;
+        self.active_area_top_offset = top;
+        self.active_area_bottom_offset = bottom;
+    }
+
+    pub fn crop(&mut self) {
+        self.active_area_left_offset = 0;
+        self.active_area_right_offset = 0;
+        self.active_area_top_offset = 0;
+        self.active_area_bottom_offset = 0;
+    }
+
+    pub fn get_mut(rpu: &mut DoviRpu) -> Option<&mut ExtMetadataBlockLevel5> {
+        if let Some(ref mut vdr_dm_data) = rpu.vdr_dm_data {
+            for ext in vdr_dm_data.ext_metadata_blocks.iter_mut() {
+                if let ExtMetadataBlock::Level5(block) = ext {
+                    return Some(block);
+                }
+            }
+        }
+
+        None
     }
 }
